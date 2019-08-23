@@ -67,6 +67,8 @@ g_yaw = interp1d(flight_time,gimbal_yaw)
 f_record = interp1d(flight_time,record_info)
 
 video = cv2.VideoCapture('flight_footage.mp4')
+FOV = 78.8
+height_width_ratio = 3/4
 (major_ver, minor_ver, subminor_ver) = (cv2.__version__).split('.')
 if int(major_ver)  < 3 :
     fps = video.get(cv2.cv.CV_CAP_PROP_FPS)
@@ -80,17 +82,13 @@ plt.ylim(gps_y_min,gps_y_max)
 plt.ion()
 plt.show()
 
-all_pitch = [f_pitch(time)+g_pitch(time)]
-all_height = [f_height(time)]
-all_yaw = [f_yaw(time)+g_yaw(time)]
 points = [[f_x_pos(time)],[f_y_pos(time)]]
-
-focus_points = [[f_x_pos(time)],[f_y_pos(time)]]
 
 i = 1
 while True:
-    # if f_record(time) == 1: # If camera is recording, show frame
-    #     success, frame = video.read()
+    object_map_points = []
+    if f_record(time) == 1: # If camera is recording, show frame
+        success, frame = video.read()
     #     if not success:
     #         break
     #     cv2.imshow('frame',frame)
@@ -99,38 +97,57 @@ while True:
 
     # time += 1/fps
     time += 1
-    points[0].append(f_x_pos(time))
-    points[1].append(f_y_pos(time))
+    points[0].append(float(f_x_pos(time)))
+    points[1].append(float(f_y_pos(time)))
 
     current_height = np.round(f_height(time),2)
-
     # print('Pitch: {}, Yaw: {}, Dist: {}'.format(np.round(g_pitch(time),2),np.round(g_yaw(time),2),current_height))
-    if g_pitch(time) < 0:
+    if g_pitch(time) < -20:
         x_dist = np.tan(90-g_pitch(time))*current_height
         drone_focus_point = rotate((points[0][-1],points[1][-1]),(points[0][-1],add_meters_to_lat(points[1][-1],x_dist)),math.radians(180-g_yaw(time)))
-        focus_points[0].append(drone_focus_point[0])
-        focus_points[1].append(drone_focus_point[1])
+
+        ground_vector = np.array([[points[0][-1],points[1][-1]],[drone_focus_point[0],drone_focus_point[1]]])
+
+        # Find transformation
+        pts_src = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)], # Middle
+                            [0, int(frame.shape[0]/2)], # Middle Left
+                            [frame.shape[1],int(frame.shape[0]/2)], # Middle Right
+                            [int(frame.shape[1]/2), 0], # Top Middle
+                            [int(frame.shape[1]/2), frame.shape[0]]]) # Bottom Middle
+        horizontal_view_dist = np.tan(FOV/2) * current_height / np.cos(90-g_pitch(time))
+        # vertical_view_dist_up =
+        # vertical_view_dist_down =
+        pts_dst = np.array([[drone_focus_point[0], drone_focus_point[1]],
+                            [489, drone_focus_point[1]],
+                            [505, drone_focus_point[1]],
+                            [drone_focus_point[0], 235],
+                            [drone_focus_point[0],153]])
+        h, status = cv2.findHomography(pts_src, pts_dst)
+        # Detection points
+        a = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)]], dtype='float32')
+        a = np.array([a])
+        # Map points
+        map_points = cv2.perspectiveTransform(a, h)
+
+        plt.plot(points[0][-2:],points[1][-2:],'blue')
+        for point in map_points:
+            object_map_points.append(plt.scatter(point[0][0],point[0][1],c='orange'))
+
+        rotate_point1 = rotate(ground_vector[1],ground_vector[0],math.radians(90))
+        rotate_point2 = rotate(ground_vector[1],ground_vector[0],math.radians(270))
+
+        b = plt.plot([ground_vector[1][0],rotate_point1[0]],[ground_vector[1][1],rotate_point1[1]],'green')
+        c = plt.plot([ground_vector[1][0],rotate_point2[0]],[ground_vector[1][1],rotate_point2[1]],'red')
+
+        plt.pause(.001)
+        b[0].remove()
+        c[0].remove()
+        for point in object_map_points:
+            point.remove()
     else:
-        focus_points[0].append(focus_points[0][-1])
-        focus_points[1].append(focus_points[1][-1])
+        plt.plot(points[0][-2:],points[1][-2:],'blue')
+        plt.pause(.001)
 
-    # Find transformation
-    pts_src = np.array([[154, 174], [702, 349], [702, 572],[1, 572], [1, 191]])
-    pts_dst = np.array([[212, 80],[489, 80],[505, 180],[367, 235], [144,153]])
-    h, status = cv2.findHomography(pts_src, pts_dst)
-
-    # Detection points
-    a = np.array([[154, 174]], dtype='float32')
-    a = np.array([a])
-
-    # finally, get the mapping
-    pointsOut = cv2.perspectiveTransform(a, h)
-
-    plt.plot(points[0][-2:],points[1][-2:],'blue')
-    # plt.plot(focus_points[0][-2:],focus_points[1][-2:],'orange')
-    a = plt.scatter(focus_points[0][-1],focus_points[1][-1],c='orange')
-    plt.pause(.001)
-    a.remove()
 
     i += 1
 # cv2.destroyAllWindows()
