@@ -127,78 +127,79 @@ while True:
     current_height = np.round(f_height(time),2)
     # print('Pitch: {}, Yaw: {}, Dist: {}'.format(np.round(g_pitch(time),2),np.round(g_yaw(time),2),current_height))
     if g_pitch(time) < -FOV/2:
-        theta = 90-g_pitch(time)
+        theta = 90 + g_pitch(time)
         dist_to_focus = current_height/np.cos(90-theta)
-        x_dist = np.tan(theta)*current_height
-        drone_focus_point = rotate((flight_points[0][-1],flight_points[1][-1]),(flight_points[0][-1],add_meters_to_lat(flight_points[1][-1],x_dist)),math.radians(180-g_yaw(time)))
+        x_dist = np.tan(math.radians(theta))*current_height
+        drone_focus_point = rotate((flight_points[0][-1],flight_points[1][-1]),(flight_points[0][-1],add_meters_to_lat(flight_points[1][-1],x_dist)),math.radians(-g_yaw(time)))
 
-        ground_vector = np.array([[flight_points[0][-1],flight_points[1][-1]],[drone_focus_point[0],drone_focus_point[1]]])
+        # ground_vector = np.array([[flight_points[0][-1],flight_points[1][-1]],[drone_focus_point[0],drone_focus_point[1]]])
 
         # Find transformation
-        pts_src = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)], # Middle
-                            [0, int(frame.shape[0]/2)], # Middle Left
-                            [frame.shape[1],int(frame.shape[0]/2)], # Middle Right
-                            [int(frame.shape[1]/2), 0], # Top Middle
-                            [int(frame.shape[1]/2), frame.shape[0]]]) # Bottom Middle
-        horizontal_view_dist = np.tan(FOV/2) * current_height / np.cos(theta)
-        vertical_view_dist_up = np.sin(FOV/2) * dist_to_focus / np.sin(90 - theta - FOV/2)
-        vertical_view_dist_down = np.sin(FOV/2) * dist_to_focus / np.sin(90 - theta)
+        # pts_src = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)], # Middle
+        #                     [0, int(frame.shape[0]/2)], # Middle Left
+        #                     [frame.shape[1],int(frame.shape[0]/2)], # Middle Right
+        #                     [int(frame.shape[1]/2), 0], # Top Middle
+        #                     [int(frame.shape[1]/2), frame.shape[0]]]) # Bottom Middle
+        # horizontal_view_dist = np.tan(FOV/2) * current_height / np.cos(theta)
+        # vertical_view_dist_up = np.sin(FOV/2) * dist_to_focus / np.sin(90 - theta - FOV/2)
+        # vertical_view_dist_down = np.sin(FOV/2) * dist_to_focus / np.sin(90 - theta)
 
-        view_extension_up = vertical_view_dist_up * np.tan(90 - theta)
-        view_extension_down = vertical_view_dist_down * np.tan(90 - theta)
+        # view_extension_up = vertical_view_dist_up * np.tan(90 - theta)
+        # view_extension_down = vertical_view_dist_down * np.tan(90 - theta)
 
-        pts_dst = np.array([[drone_focus_point[0], drone_focus_point[1]],
-                            [489, drone_focus_point[1]],
-                            [505, drone_focus_point[1]],
-                            [drone_focus_point[0], 235],
-                            [drone_focus_point[0],153]])
-        h, status = cv2.findHomography(pts_src, pts_dst)
+        # pts_dst = np.array([[drone_focus_point[0], drone_focus_point[1]],
+        #                     [489, drone_focus_point[1]],
+        #                     [505, drone_focus_point[1]],
+        #                     [drone_focus_point[0], 235],
+        #                     [drone_focus_point[0],153]])
+        # h, status = cv2.findHomography(pts_src, pts_dst)
         # Detection flight_points
-        a = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)]], dtype='float32')
-        a = np.array([a])
+        # a = np.array([[int(frame.shape[1]/2), int(frame.shape[0]/2)]], dtype='float32')
+        # a = np.array([a])
         # Map flight_points
-        map_points = cv2.perspectiveTransform(a, h)
+        # map_points = cv2.perspectiveTransform(a, h)
+        map_points = [drone_focus_point]
 
         plt.plot(flight_points[0][-2:],flight_points[1][-2:],'blue')
         for point in map_points:
-            object_map_points.append(plt.scatter(point[0][0],point[0][1],c='orange'))
+            object_map_points.append(plt.scatter(point[0],point[1],c='orange'))
 
-        rotate_point1 = rotate(ground_vector[1],ground_vector[0],math.radians(90))
-        rotate_point2 = rotate(ground_vector[1],ground_vector[0],math.radians(270))
-        rotate_point3 = rotate(ground_vector[1],ground_vector[0],math.radians(0))
-        rotate_point4 = rotate(ground_vector[1],ground_vector[0],math.radians(180))
-
-        left_vector = np.array([[ground_vector[1][0],rotate_point1[0]],[ground_vector[1][1],rotate_point1[1]]])
-        right_vector = np.array([[ground_vector[1][0],rotate_point2[0]],[ground_vector[1][1],rotate_point2[1]]])
-        down_vector = np.array([[ground_vector[1][0],rotate_point3[0]],[ground_vector[1][1],rotate_point3[1]]])
-        up_vector = np.array([[ground_vector[1][0],rotate_point4[0]],[ground_vector[1][1],rotate_point4[1]]])
-
-        corner_point1 = rotate(up_vector[:,1],up_vector[:,0],math.radians(270))
-        corner_vector1 = np.array([[up_vector[0][1],corner_point1[0]],[up_vector[1][1],corner_point1[1]]])
-        normed_extension_up = free_norm(corner_vector1) * view_extension_up / dist_between_lat_long_points(corner_vector1[:,0],corner_vector1[:,1])
-        top_left_vector = scale_vector(corner_vector1[:,0],corner_vector1[:,1],free_norm(corner_vector1)+normed_extension_up)
-
-        corner_point2 = rotate(down_vector[:,1],down_vector[:,0],math.radians(90))
-        corner_vector2 = np.array([[down_vector[0][1],corner_point2[0]],[down_vector[1][1],corner_point2[1]]])
-        normed_extension_down = free_norm(corner_vector2) * view_extension_down / dist_between_lat_long_points(corner_vector2[:,0],corner_vector2[:,1])
-        bottom_left_vector = scale_vector(corner_vector2[:,0],corner_vector2[:,1],free_norm(corner_vector2)+normed_extension_down)
-
-        c = plt.plot(left_vector[0],left_vector[1],'blue')
-        d = plt.plot(right_vector[0],right_vector[1],'blue')
-        e = plt.plot(up_vector[0],up_vector[1],'blue')
-        f = plt.plot(down_vector[0],down_vector[1],'blue')
-        c2 = plt.plot(top_left_vector[:,0],top_left_vector[:,1],'red')
-        d2 = plt.plot(bottom_left_vector[:,0],bottom_left_vector[:,1],'red')
+        # rotate_point1 = rotate(ground_vector[1],ground_vector[0],math.radians(90))
+        # rotate_point2 = rotate(ground_vector[1],ground_vector[0],math.radians(270))
+        # rotate_point3 = rotate(ground_vector[1],ground_vector[0],math.radians(0))
+        # rotate_point4 = rotate(ground_vector[1],ground_vector[0],math.radians(180))
+        #
+        # left_vector = np.array([[ground_vector[1][0],rotate_point1[0]],[ground_vector[1][1],rotate_point1[1]]])
+        # right_vector = np.array([[ground_vector[1][0],rotate_point2[0]],[ground_vector[1][1],rotate_point2[1]]])
+        # down_vector = np.array([[ground_vector[1][0],rotate_point3[0]],[ground_vector[1][1],rotate_point3[1]]])
+        # up_vector = np.array([[ground_vector[1][0],rotate_point4[0]],[ground_vector[1][1],rotate_point4[1]]])
+        #
+        # corner_point1 = rotate(up_vector[:,1],up_vector[:,0],math.radians(270))
+        # corner_vector1 = np.array([[up_vector[0][1],corner_point1[0]],[up_vector[1][1],corner_point1[1]]])
+        # normed_extension_up = free_norm(corner_vector1) * view_extension_up / dist_between_lat_long_points(corner_vector1[:,0],corner_vector1[:,1])
+        # top_left_vector = scale_vector(corner_vector1[:,0],corner_vector1[:,1],free_norm(corner_vector1)+normed_extension_up)
+        #
+        # corner_point2 = rotate(down_vector[:,1],down_vector[:,0],math.radians(90))
+        # corner_vector2 = np.array([[down_vector[0][1],corner_point2[0]],[down_vector[1][1],corner_point2[1]]])
+        # normed_extension_down = free_norm(corner_vector2) * view_extension_down / dist_between_lat_long_points(corner_vector2[:,0],corner_vector2[:,1])
+        # bottom_left_vector = scale_vector(corner_vector2[:,0],corner_vector2[:,1],free_norm(corner_vector2)+normed_extension_down)
+        #
+        # c = plt.plot(left_vector[0],left_vector[1],'blue')
+        # d = plt.plot(right_vector[0],right_vector[1],'blue')
+        # e = plt.plot(up_vector[0],up_vector[1],'blue')
+        # f = plt.plot(down_vector[0],down_vector[1],'blue')
+        # c2 = plt.plot(top_left_vector[:,0],top_left_vector[:,1],'red')
+        # d2 = plt.plot(bottom_left_vector[:,0],bottom_left_vector[:,1],'red')
 
         plt.pause(.001)
         for point in object_map_points:
             point.remove()
-        c[0].remove()
-        d[0].remove()
-        e[0].remove()
-        f[0].remove()
-        c2[0].remove()
-        d2[0].remove()
+        # c[0].remove()
+        # d[0].remove()
+        # e[0].remove()
+        # f[0].remove()
+        # c2[0].remove()
+        # d2[0].remove()
 
     else:
         plt.plot(flight_points[0][-2:],flight_points[1][-2:],'blue')
