@@ -9,6 +9,14 @@ import math
 from geojson import Point
 import geopy.distance
 
+def scale_vector(vector,scalar):
+    vector = np.array(vector)
+    temp = np.array([[0,0],[vector[1,0]-vector[0,0],vector[1,1]-vector[0,1]]])
+    temp = scalar * temp / np.linalg.norm(temp)
+    temp[0] = vector[0]
+    temp[1] += vector[0]
+    return temp
+
 def dist_between_lat_long_points(p1,p2):
     return geopy.distance.vincenty(p1, p2).m
 
@@ -31,32 +39,63 @@ def meters_to_long(lat,dist):
 def frame_point_to_rotation(point):
     return yaw_adjust, pitch_adjust
 
-def hover_point_to_lat_long(lat,long,height,yaw,pitch):
+def hover_point_to_lat_long(long,lat,height,yaw,pitch,x_pos):
     '''
     Given Drone latitude, longitude, height, pitch, and yaw, finds
-    latitude and longitude of point on ground in focus of camera view
+    latitude and longitude of point on ground
+
+    ### TODO: Fix this formula to correctly take into account curvature in camera frame ###
     '''
     if pitch > 85:
         pitch = 85
+    if pitch == 0:
+        pitch = .00000001
+    dist_to_focus = height / np.cos(math.radians(pitch))
     x_dist = np.tan(math.radians(pitch))*height
-    if pitch < 0:
-        return rotate((flight_points[0][-1],flight_points[1][-1]),(flight_points[0][-1],
-                add_meters_to_lat(flight_points[1][-1],x_dist)),math.radians(yaw))
-    else:
-        return rotate((flight_points[0][-1],flight_points[1][-1]),(flight_points[0][-1],
-        add_meters_to_lat(flight_points[1][-1],x_dist)),math.radians(yaw))
+    # temp = rotate((long,lat),(long,add_meters_to_lat(lat,x_dist)),math.radians(270-yaw))
+    temp = rotate((long,lat),(long,add_meters_to_lat(lat,x_dist)),math.radians(yaw))
 
+    if x_pos == 0:
+        return temp
+    else:
+        scalar = dist_to_focus * np.tan(np.arctan( 2 * abs(x_pos) * np.tan(math.radians(FOV/2)) / frame_width ))
+        vector = scale_vector([[long,lat],[temp[0],temp[1]]],meters_to_lat(scalar))
+        return vector[1]
+
+def lat_long_point_in_range(frame_size,lat_long,x_min,x_max,y_min,y_max):
+    '''
+    Return point in frame based on lat long range
+    '''
+    range_width = x_max - x_min
+    range_height = y_max - y_min
+    x_point = (lat_long[0] - x_min) / range_width * frame_size[1]
+    y_point = (y_max - lat_long[1]) / range_height * frame_size[0]
+    return (int(x_point),int(y_point))
 
 # Read flight log into dataframe
 df = pd.read_csv('flight_record.csv',encoding="ISO-8859-1")
 
+fly_state = df['OSD.flycState'].values
+start_index = 0
+for i, item in enumerate(fly_state):
+    if item != 'EngineStart':
+        start_index = i + 1
+        break
+
 # Flight time updates
 flight_time = df['OSD.flyTime [s]'].values
+flight_time = flight_time[start_index:] - flight_time[start_index]
 
 # Video recording info
-record_info = df['CAMERA_INFO.recordState'].values
+record_info = df['CAMERA_INFO.recordState'].values[start_index:]
 record_info = np.where(record_info=='No',0,record_info)
 record_info = np.where(record_info=='Starting',1,record_info)
+video_delay_index = 0
+for k, item in enumerate(record_info):
+    if item == 1:
+        video_delay_index = k
+        break
+video_delay_time = flight_time[video_delay_index]
 
 # Find distance boundaries traveled in flight
 gps_x_min = np.min(df['OSD.longitude'])
@@ -65,18 +104,18 @@ gps_y_min = np.min(df['OSD.latitude'])
 gps_y_max = np.max(df['OSD.latitude'])
 
 # Drone positional information
-x_pos = df['OSD.longitude'].values
-y_pos = df['OSD.latitude'].values
-alt = df['OSD.altitude [m]'].values
-height = df['OSD.height [m]'].values
-pitch = df['OSD.pitch'].values
-yaw = df['OSD.yaw'].values
-roll = df['OSD.roll'].values
+x_pos = df['OSD.longitude'].values[start_index:]
+y_pos = df['OSD.latitude'].values[start_index:]
+alt = df['OSD.altitude [m]'].values[start_index:]
+height = df['OSD.height [m]'].values[start_index:]
+pitch = df['OSD.pitch'].values[start_index:]
+yaw = df['OSD.yaw'].values[start_index:]
+roll = df['OSD.roll'].values[start_index:]
 
 # Gimbal positional information
-gimbal_pitch = df['GIMBAL.pitch'].values
-gimbal_roll = df['GIMBAL.roll'].values
-gimbal_yaw = df['GIMBAL.yaw'].values
+gimbal_pitch = df['GIMBAL.pitch'].values[start_index:]
+gimbal_roll = df['GIMBAL.roll'].values[start_index:]
+gimbal_yaw = df['GIMBAL.yaw'].values[start_index:]
 
 # Interpolate discrete positional data into continuous functions
 f_x_pos = interp1d(flight_time,x_pos)
@@ -96,6 +135,7 @@ g_yaw = interp1d(flight_time,gimbal_yaw)
 f_record = interp1d(flight_time,record_info)
 
 video = cv2.VideoCapture('flight_footage.mp4')
+
 FOV = 78.8 # DJI Mavic Pro Field of View
 height_width_ratio = 3/4 # DJI Mavic Pro Ratio
 
@@ -114,72 +154,74 @@ frame_center = (frame_width/2,frame_height/2)
 degree_per_width = FOV / frame_width
 degree_per_height = height_width_ratio * FOV / frame_height
 
-# Create interactive plot and limit to flight area
-plt.xlim(gps_x_min-.001,gps_x_max+.001)
-plt.ylim(gps_y_min-.001,gps_y_max+.001)
-plt.ion()
-plt.show()
+# Background image for plotting drone position and detections
+background_img = np.ones((512,720,3), np.uint8) * 255
 
 time = 0
-flight_points = [[f_x_pos(time)],[f_y_pos(time)]]
+
+# Adjust starting frame based on given start time
+frame_number = np.max([0,int((time - video_delay_time) * fps)])
+video.set(1, frame_number-1)
+
+flight_point = lat_long_point_in_range(background_img.shape,(f_x_pos(time),f_y_pos(time)),gps_x_min,gps_x_max,gps_y_min,gps_y_max)
+flight_points = [[flight_point[0]],[flight_point[1]]]
 i = 1
 while True:
-    flight_points[0].append(float(f_x_pos(time)))
-    flight_points[1].append(float(f_y_pos(time)))
+    flight_point = lat_long_point_in_range(background_img.shape,(f_x_pos(time),f_y_pos(time)),gps_x_min,gps_x_max,gps_y_min,gps_y_max)
+    flight_points[0].append(flight_point[0])
+    flight_points[1].append(flight_point[1])
     current_height = np.round(f_height(time),2)
     object_map_points = []
     if f_record(time) == 1: # If camera is recording, show frame
         success, frame = video.read()
-        # if not success:
-        #     break
-        # cv2.imshow('frame',frame)
-        # if cv2.waitKey(1) == 27:
-        #     break
+        if not success:
+            break
+        cv2.imshow('frame',frame)
+        if cv2.waitKey(1) == 27:
+            break
 
     if g_pitch(time) < 0:
         view_pitch = 90 + g_pitch(time)
-        dist_to_focus = current_height / np.cos(math.radians(view_pitch))
 
-        drone_focus_point = hover_point_to_lat_long(flight_points[0][-1],flight_points[1][-1],
-                                                    current_height,-g_yaw(time),view_pitch)
+        drone_focus_point = hover_point_to_lat_long(f_x_pos(time),f_y_pos(time),
+                                                    current_height,-g_yaw(time),view_pitch,0)
 
         '''Insert NN for detection of objects in frame'''
         detections = [(0,0),(frame_width,0),(frame_width,frame_height),(0,frame_height)]
 
         detection_points = []
-        for detection in detections:
+        for j, detection in enumerate(detections):
             pitch_rotation = (detection[1] - frame_center[1]) * degree_per_height
             yaw_rotation = (detection[0] - frame_center[0]) * degree_per_width
-            if (view_pitch + pitch_rotation) < 0:
-                yaw_rotation = -yaw_rotation
-            point = hover_point_to_lat_long(flight_points[0][-1],flight_points[1][-1],
-                    current_height,-g_yaw(time) + yaw_rotation,view_pitch + pitch_rotation)
+            total_pitch = view_pitch + pitch_rotation
+            total_yaw = -g_yaw(time) + yaw_rotation
+            if total_pitch < 0:
+                total_yaw -= 2*yaw_rotation
+            point = hover_point_to_lat_long(f_x_pos(time),f_y_pos(time),
+                    current_height,total_yaw,total_pitch,detection[0]-frame_width/2)
 
-            detection_points.append(point)
+            detection_points.append(lat_long_point_in_range(background_img.shape,(point[0],point[1]),gps_x_min,gps_x_max,gps_y_min,gps_y_max))
 
-        detection_lines = []
-        detection_lines.append(plt.plot([detection_points[0][0],detection_points[1][0]],[detection_points[0][1],detection_points[1][1]],'red'))
-        detection_lines.append(plt.plot([detection_points[1][0],detection_points[2][0]],[detection_points[1][1],detection_points[2][1]],'red'))
-        detection_lines.append(plt.plot([detection_points[2][0],detection_points[3][0]],[detection_points[2][1],detection_points[3][1]],'red'))
-        detection_lines.append(plt.plot([detection_points[3][0],detection_points[0][0]],[detection_points[3][1],detection_points[0][1]],'red'))
-        #
-        plt.plot(flight_points[0][-2:],flight_points[1][-2:],'blue')
-        drone_fp = plt.scatter(drone_focus_point[0],drone_focus_point[1],c='orange')
-        plt.pause(.001)
-        drone_fp.remove()
-        for line in detection_lines:
-            line[0].remove()
+        background_img = np.ones((512,720,3), np.uint8) * 255
+        for x in range(1,len(flight_points[0])):
+            cv2.line(background_img,(flight_points[0][x-1],flight_points[1][x-1]),(flight_points[0][x],flight_points[1][x]),(255,0,0),2)
+        for x in range(len(detection_points)):
+            cv2.line(background_img,detection_points[x-1],detection_points[x],(0,255,0),2)
+        draw_point = lat_long_point_in_range(background_img.shape,(drone_focus_point[0],drone_focus_point[1]),gps_x_min,gps_x_max,gps_y_min,gps_y_max)
+        cv2.circle(background_img,draw_point,3,(0,0,255),2)
+        cv2.imshow('plot',background_img)
+        if cv2.waitKey(1) == 27:
+            break
 
-    # else:
-    #     plt.plot(flight_points[0][-2:],flight_points[1][-2:],'blue')
-    #     plt.pause(.001)
-
-    # time += 1/fps
-    time += .8
-    i += 1
-# cv2.destroyAllWindows()
+    else:
+        cv2.line(background_img,(flight_points[0][-1],flight_points[1][-1]),(flight_points[0][-2],flight_points[1][-2]),(255,0,0),2)
+        cv2.imshow('plot',background_img)
 
 
+    time += 1/fps
+    # time += 1.1
+    i += 1.2
+cv2.destroyAllWindows()
 
 
 
