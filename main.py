@@ -9,37 +9,7 @@ import math
 from geojson import Point
 import geopy.distance
 
-def find_pitch_and_yaw_adj(detection,current_pitch,current_yaw):
-    current_s_height = np.sin(math.radians(current_pitch))
-
-    x_hat = (detection[1] / frame_height) * s_height * np.sin(math.radians(current_pitch))
-    y_hat = (detection[1] / frame_height) * s_height * np.cos(math.radians(current_pitch))
-
-    new_x = np.cos(math.radians(current_pitch)) - x_hat
-    new_y = s_width * (detection[0] / frame_width)
-    new_z = current_s_height + y_hat
-
-    pitch = np.arccos(new_z / np.sqrt(new_x**2 + new_y**2 + new_z**2))
-    yaw = np.arctan(new_y / new_x)
-    if new_x < 0:
-        pitch = -pitch
-        return -round(270 + math.degrees(pitch),2), current_yaw + round(math.degrees(yaw),2)
-    else:
-        return -round(math.degrees(pitch) - 90,2), current_yaw + round(math.degrees(yaw),2)
-
-def pos_from_pitch_and_yaw(current_pos,current_height,pitch,yaw):
-    mult = 1
-    if pitch < -90:
-        pitch = -(round(pitch + 180,2))
-        mult = -1
-    ground_dist = current_height / np.tan(math.radians(abs(pitch)))
-    x_dist = mult * meters_to_long(current_pos[1],ground_dist * np.sin(math.radians(yaw)))
-    y_dist = mult * meters_to_lat(ground_dist * np.cos(math.radians(yaw)))
-    return (x_dist+current_pos[0],y_dist+current_pos[1])
-
-def dist_between_lat_long_points(p1,p2):
-    return geopy.distance.vincenty(p1, p2).m
-
+'''Lat, Long specific functions'''
 earth_radius = 6371000.0
 def add_meters_to_lat(lat,dist):
     return lat  + (dist / earth_radius) * (180 / np.pi)
@@ -49,14 +19,49 @@ def meters_to_lat(dist):
     return (dist / earth_radius) * (180 / np.pi)
 def meters_to_long(lat,dist):
     return (dist / earth_radius) * (180 / np.pi) / np.cos(lat * np.pi/180)
+def dist_between_lat_long_points(p1,p2):
+    return geopy.distance.vincenty(p1, p2).m
 
-def frame_point_to_rotation(point):
-    return yaw_adjust, pitch_adjust
+def find_pitch_and_yaw_adj(detection,current_pitch,current_yaw):
+    '''Find pitch and yaw from point in camera frame'''
+
+    # X and Z deviations from tangent point of camera frame plane that is tangent
+    # to unit sphere. These deviations are only dependent on the current pitch
+    x_hat = (detection[1] / frame_height) * s_height * np.sin(math.radians(current_pitch))
+    z_hat = (detection[1] / frame_height) * s_height * np.cos(math.radians(current_pitch))
+
+    # Z height of center of camera frame plane
+    current_s_height = np.sin(math.radians(current_pitch))
+
+    # Cartesian coordinates of point in camera frame plane tangent to unit sphere
+    # with focus point as tangent point
+    new_x = np.cos(math.radians(current_pitch)) - x_hat
+    new_y = s_width * (detection[0] / frame_width)
+    new_z = current_s_height + z_hat
+
+    # Cartesian to Spherical transformation, r is irrelevant
+    pitch = np.arccos(new_z / np.sqrt(new_x**2 + new_y**2 + new_z**2)) # Phi
+    yaw = np.arctan(new_y / new_x) # Theta
+
+    if new_x < 0:
+        pitch = -pitch
+        return -round(270 + math.degrees(pitch),2), current_yaw + round(math.degrees(yaw),2)
+    else:
+        return -round(math.degrees(pitch) - 90,2), current_yaw + round(math.degrees(yaw),2)
+
+def pos_from_pitch_and_yaw(current_pos,current_height,pitch,yaw):
+    '''Find lat, long on ground from drone point, pitch, and yaw'''
+    mult = 1
+    if pitch < -90:
+        pitch = -(round(pitch + 180,2))
+        mult = -1
+    ground_dist = current_height / np.tan(math.radians(abs(pitch))) # Ground distance to point
+    x_dist = mult * meters_to_long(current_pos[1],ground_dist * np.sin(math.radians(yaw)))
+    y_dist = mult * meters_to_lat(ground_dist * np.cos(math.radians(yaw)))
+    return (x_dist+current_pos[0],y_dist+current_pos[1])
 
 def lat_long_point_in_range(frame_size,lat_long,x_min,x_max,y_min,y_max):
-    '''
-    Return point in frame based on lat long range
-    '''
+    '''Return point in frame based on lat long range'''
     range_width = x_max - x_min
     range_height = y_max - y_min
     x_point = (lat_long[0] - x_min) / range_width * frame_size[1]
@@ -148,19 +153,23 @@ s_height = np.tan(math.radians(height_width_ratio * FOV / 2))
 # Background image for plotting drone position and detections
 background_img = np.ones((512,720,3), np.uint8) * 255
 
+'''### Control start time of flight ###'''
 time = 450
 
-# Adjust starting frame based on given start time
+# Adjust starting frame based on given start time in log file
 frame_number = np.max([0,int((time - video_delay_time) * fps)])
 video.set(1, frame_number-1)
 
+# Tracks all lat, long points of drone in flight
 flight_point = lat_long_point_in_range(background_img.shape,(f_x_pos(time),f_y_pos(time)),gps_x_min,gps_x_max,gps_y_min,gps_y_max)
 flight_points = [[flight_point[0]],[flight_point[1]]]
 i = 1
 while True:
+    # Update flight points
     flight_point = lat_long_point_in_range(background_img.shape,(f_x_pos(time),f_y_pos(time)),gps_x_min,gps_x_max,gps_y_min,gps_y_max)
     flight_points[0].append(flight_point[0])
     flight_points[1].append(flight_point[1])
+
     current_height = np.round(f_height(time),2)
     object_map_points = []
     if f_record(time) == 1: # If camera is recording, show frame
@@ -172,15 +181,19 @@ while True:
             break
 
     view_pitch = g_pitch(time)
-    if view_pitch < 0:
+    if view_pitch < 0: # If camera is aimed below horizontal
 
-        new_pitch, new_yaw = find_pitch_and_yaw_adj((0,0),view_pitch,g_yaw(time))
-        if new_pitch > 0:
-            continue
-        drone_focus_point = pos_from_pitch_and_yaw((f_x_pos(time),f_y_pos(time)),current_height,new_pitch,new_yaw)
+        # new_pitch, new_yaw = find_pitch_and_yaw_adj((0,0),view_pitch,g_yaw(time))
+        # drone_focus_point = pos_from_pitch_and_yaw((f_x_pos(time),f_y_pos(time)),current_height,new_pitch,new_yaw)
+        drone_focus_point = pos_from_pitch_and_yaw((f_x_pos(time),f_y_pos(time)),current_height,view_pitch,g_yaw(time))
 
         '''Insert NN for detection of objects in frame'''
-        detections = [(-frame_width,-frame_height),(-frame_width,frame_height),(frame_width,frame_height),(frame_width,-frame_height)]
+        detections = [
+                    (-frame_width,-frame_height),
+                    (-frame_width,frame_height),
+                    (frame_width,frame_height),
+                    (frame_width,-frame_height)
+                    ]
 
         detection_points = []
         for j, detection in enumerate(detections):
