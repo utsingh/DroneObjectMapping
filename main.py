@@ -9,22 +9,36 @@ import math
 from geojson import Point
 import geopy.distance
 
-def scale_vector(vector,scalar):
-    vector = np.array(vector)
-    temp = np.array([[0,0],[vector[1,0]-vector[0,0],vector[1,1]-vector[0,1]]])
-    temp = scalar * temp / np.linalg.norm(temp)
-    temp[0] = vector[0]
-    temp[1] += vector[0]
-    return temp
+def find_pitch_and_yaw_adj(detection,current_pitch,current_yaw):
+    current_s_height = np.sin(math.radians(current_pitch))
+
+    x_hat = (detection[1] / frame_height) * s_height * np.sin(math.radians(current_pitch))
+    y_hat = (detection[1] / frame_height) * s_height * np.cos(math.radians(current_pitch))
+
+    new_x = np.cos(math.radians(current_pitch)) - x_hat
+    new_y = s_width * (detection[0] / frame_width)
+    new_z = current_s_height + y_hat
+
+    pitch = np.arccos(new_z / np.sqrt(new_x**2 + new_y**2 + new_z**2))
+    yaw = np.arctan(new_y / new_x)
+    if new_x < 0:
+        pitch = -pitch
+        return -round(270 + math.degrees(pitch),2), current_yaw + round(math.degrees(yaw),2)
+    else:
+        return -round(math.degrees(pitch) - 90,2), current_yaw + round(math.degrees(yaw),2)
+
+def pos_from_pitch_and_yaw(current_pos,current_height,pitch,yaw):
+    mult = 1
+    if pitch < -90:
+        pitch = -(round(pitch + 180,2))
+        mult = -1
+    ground_dist = current_height / np.tan(math.radians(abs(pitch)))
+    x_dist = mult * meters_to_long(current_pos[1],ground_dist * np.sin(math.radians(yaw)))
+    y_dist = mult * meters_to_lat(ground_dist * np.cos(math.radians(yaw)))
+    return (x_dist+current_pos[0],y_dist+current_pos[1])
 
 def dist_between_lat_long_points(p1,p2):
     return geopy.distance.vincenty(p1, p2).m
-
-def rotate(origin, point, angle):
-    '''Rotate a vector that isn't thorugh origin'''
-    new_x = origin[0] + math.cos(angle) * (point[0] - origin[0]) - math.sin(angle) * (point[1] - origin[1])
-    new_y = origin[1] + math.sin(angle) * (point[0] - origin[0]) + math.cos(angle) * (point[1] - origin[1])
-    return [new_x, new_y]
 
 earth_radius = 6371000.0
 def add_meters_to_lat(lat,dist):
@@ -38,29 +52,6 @@ def meters_to_long(lat,dist):
 
 def frame_point_to_rotation(point):
     return yaw_adjust, pitch_adjust
-
-def hover_point_to_lat_long(long,lat,height,yaw,pitch,x_pos):
-    '''
-    Given Drone latitude, longitude, height, pitch, and yaw, finds
-    latitude and longitude of point on ground
-
-    ### TODO: Fix this formula to correctly take into account curvature in camera frame ###
-    '''
-    if pitch > 85:
-        pitch = 85
-    if pitch == 0:
-        pitch = .00000001
-    dist_to_focus = height / np.cos(math.radians(pitch))
-    x_dist = np.tan(math.radians(pitch))*height
-    # temp = rotate((long,lat),(long,add_meters_to_lat(lat,x_dist)),math.radians(270-yaw))
-    temp = rotate((long,lat),(long,add_meters_to_lat(lat,x_dist)),math.radians(yaw))
-
-    if x_pos == 0:
-        return temp
-    else:
-        scalar = dist_to_focus * np.tan(np.arctan( 2 * abs(x_pos) * np.tan(math.radians(FOV/2)) / frame_width ))
-        vector = scale_vector([[long,lat],[temp[0],temp[1]]],meters_to_lat(scalar))
-        return vector[1]
 
 def lat_long_point_in_range(frame_size,lat_long,x_min,x_max,y_min,y_max):
     '''
@@ -137,7 +128,6 @@ f_record = interp1d(flight_time,record_info)
 video = cv2.VideoCapture('flight_footage.mp4')
 
 FOV = 78.8 # DJI Mavic Pro Field of View
-height_width_ratio = 3/4 # DJI Mavic Pro Ratio
 
 # Get frames per second and frame size from video
 (major_ver, minor_ver, subminor_ver) = (cv2.__version__).split('.')
@@ -150,14 +140,15 @@ else:
     frame_width = video.get(cv2.CAP_PROP_FRAME_WIDTH)
     frame_height = video.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
-frame_center = (frame_width/2,frame_height/2)
-degree_per_width = FOV / frame_width
-degree_per_height = height_width_ratio * FOV / frame_height
+height_width_ratio = frame_height/frame_width
+
+s_width = np.tan(math.radians(FOV / 2))
+s_height = np.tan(math.radians(height_width_ratio * FOV / 2))
 
 # Background image for plotting drone position and detections
 background_img = np.ones((512,720,3), np.uint8) * 255
 
-time = 0
+time = 450
 
 # Adjust starting frame based on given start time
 frame_number = np.max([0,int((time - video_delay_time) * fps)])
@@ -180,25 +171,24 @@ while True:
         if cv2.waitKey(1) == 27:
             break
 
-    if g_pitch(time) < 0:
-        view_pitch = 90 + g_pitch(time)
+    view_pitch = g_pitch(time)
+    if view_pitch < 0:
 
-        drone_focus_point = hover_point_to_lat_long(f_x_pos(time),f_y_pos(time),
-                                                    current_height,-g_yaw(time),view_pitch,0)
+        new_pitch, new_yaw = find_pitch_and_yaw_adj((0,0),view_pitch,g_yaw(time))
+        if new_pitch > 0:
+            continue
+        drone_focus_point = pos_from_pitch_and_yaw((f_x_pos(time),f_y_pos(time)),current_height,new_pitch,new_yaw)
 
         '''Insert NN for detection of objects in frame'''
-        detections = [(0,0),(frame_width,0),(frame_width,frame_height),(0,frame_height)]
+        detections = [(-frame_width,-frame_height),(-frame_width,frame_height),(frame_width,frame_height),(frame_width,-frame_height)]
 
         detection_points = []
         for j, detection in enumerate(detections):
-            pitch_rotation = (detection[1] - frame_center[1]) * degree_per_height
-            yaw_rotation = (detection[0] - frame_center[0]) * degree_per_width
-            total_pitch = view_pitch + pitch_rotation
-            total_yaw = -g_yaw(time) + yaw_rotation
-            if total_pitch < 0:
-                total_yaw -= 2*yaw_rotation
-            point = hover_point_to_lat_long(f_x_pos(time),f_y_pos(time),
-                    current_height,total_yaw,total_pitch,detection[0]-frame_width/2)
+
+            new_pitch, new_yaw = find_pitch_and_yaw_adj(detection,view_pitch,g_yaw(time))
+            if new_pitch > 0:
+                new_pitch = -1
+            point = pos_from_pitch_and_yaw((f_x_pos(time),f_y_pos(time)),current_height,new_pitch,new_yaw)
 
             detection_points.append(lat_long_point_in_range(background_img.shape,(point[0],point[1]),gps_x_min,gps_x_max,gps_y_min,gps_y_max))
 
